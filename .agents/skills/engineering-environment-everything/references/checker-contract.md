@@ -1,6 +1,8 @@
 # 실행 가능한 검증 계약
 
-CHECKS.json은 schema_version 2이며 sources, requirements, tasks, checks 배열을 가진다. 경로는 프로젝트 루트 기준이다. sources는 산출물 전체를 포함하는 glob 배열이며 생성된 로그·상태 파일을 포함하지 않는다. 결과물이 달라지면 이전 검증 결과는 다시 확인한다.
+CHECKS.json은 schema_version 2이며 sources, requirements, tasks, checks 배열을 가진다. 새 계획은 [환경 준비 배열](harness-generation.md#환경-준비)도 명시한다. 경로는 프로젝트 루트 기준이다. sources는 산출물 전체를 포함하는 glob 배열이며 생성된 로그·상태 파일을 포함하지 않는다. 결과물이 달라지면 이전 검증 결과는 다시 확인한다.
+
+계획 모델이 승인 전에 판정 코드, 정상·실패 예제, 허용치와 검증 명령을 작성한다. 실제 환경이 필요한 예제는 준비 후 교정할 때 실행한다. 구현 모델이 테스트에 맞춰 제품을 고치더라도 테스트 코드와 판정 기준은 승인한 버전으로 유지한다.
 
 requirements 항목은 id, kind(goal 또는 constraint), description, checks(검증 ID 배열)를 가진다. 모든 목표와 PROFILE 제약·사용자 금칙을 대응시킨다. tasks 항목은 id, work, checks, depends_on 배열을 가진다. 검증이 없는 요구사항과 순환 의존성은 승인 전에 해소한다.
 

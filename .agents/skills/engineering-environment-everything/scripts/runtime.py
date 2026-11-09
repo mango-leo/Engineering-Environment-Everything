@@ -250,6 +250,29 @@ class Harness:
             unresolved = {identity: dependencies for identity, dependencies in unresolved.items() if identity not in ready}
         for pattern in manifest["sources"]:
             within(self.root, pattern)
+        if "environment" in manifest:
+            steps = manifest["environment"]
+            if not isinstance(steps, list):
+                raise ValueError("environment must be an ordered array")
+            step_ids = set()
+            for step in steps:
+                if not isinstance(step, dict):
+                    raise ValueError("Environment steps must be objects")
+                identity = text(step.get("id"), "environment step ID")
+                if identity in step_ids:
+                    raise ValueError("Duplicate environment step ID")
+                step_ids.add(identity)
+                within(self.root, step.get("cwd", "."))
+                number(step.get("timeout_seconds", 300), "environment timeout", 0.001)
+                command(step.get("probe"))
+                if "setup" in step:
+                    command(step["setup"])
+                files = step.get("files", [])
+                if not isinstance(files, list):
+                    raise ValueError("Environment files must be an array")
+                for path in files:
+                    if not within(self.root, path).is_file():
+                        raise ValueError(f"Missing environment file: {path}")
         return manifest
 
     def sources(self, manifest):
@@ -265,6 +288,8 @@ class Harness:
         paths = {(self.folder / name).relative_to(self.root).as_posix() for name in SEALED}
         for check in manifest["checks"]:
             paths.update(check["checker_files"])
+        for step in manifest.get("environment", []):
+            paths.update(step.get("files", []))
         hashes = {}
         for path in sorted(paths):
             resolved = within(self.root, path)
@@ -333,21 +358,110 @@ class Harness:
             return {**record, "status": "ERROR", "reason": str(error)}
 
     def approve(self):
-        if self.state.get("status") == "running":
+        if self.state.get("status") in ("running", "preparing"):
             raise ValueError("Pause and review changes before reapproval")
-        self.state.update(status="awaiting_approval", phase="review", blocked_on=None, results={})
+        if self.state.get("recovery_required"):
+            raise ValueError("Legacy interrupted state requires recover first")
+        self.state.update(status="awaiting_approval", phase="review", blocked_on=None,
+                          results={}, preparation=None, run=None)
         self.save()
         manifest = self.manifest()
         before = self.sealed(manifest)
+        if "environment" in manifest:
+            write(self.folder / "BASELINE.json", {"approved_at": time.time(), "files": before})
+            self.state.update(status="preparing", phase="environment", run=self.new_run(),
+                              preparation={"attempts": {}, "steps": {}, "calibrated": False})
+            self.remaining()
+            self.save()
+            return
+
+        # Manifests created before separate preparation retain their original entry point.
+        deadline = time.time() + self.control()["timeout_minutes"] * 60
+        self.run_calibration(manifest, before, lambda: max(0, deadline - time.time()))
+        write(self.folder / "BASELINE.json", {"approved_at": time.time(), "files": before})
+        self.state.update(status="ready")
+        self.save()
+
+    def preparation_manifest(self):
+        if self.state.get("status") != "preparing" or not self.state.get("preparation"):
+            raise ValueError("An approved preparation run is required")
+        if not self.remaining():
+            raise ValueError("Run deadline reached")
+        manifest = self.manifest()
+        self.integrity(manifest)
+        return manifest
+
+    def prepare(self, identity):
+        manifest = self.preparation_manifest()
+        progress = self.state["preparation"]
+        steps = manifest["environment"]
+        pending = next((step for step in steps if progress["steps"].get(step["id"], {}).get("status") != "OK"), None)
+        if pending is None or pending["id"] != identity:
+            raise ValueError("Prepare the next pending environment step in approved order")
+
+        attempts = progress["attempts"]
+        limit = self.control()["environment_attempts"]
+        if attempts.get(identity, 0) >= limit:
+            self.state.update(status="blocked", blocked_on=f"Environment attempt limit for {identity}")
+            self.save()
+            raise ValueError(self.state["blocked_on"])
+        attempts[identity] = attempts.get(identity, 0) + 1
+        self.save()
+
+        def execute_step(key):
+            timeout = min(pending.get("timeout_seconds", 300), self.remaining())
+            return self.execute(pending[key], pending.get("cwd", "."), timeout, None, uuid.uuid4().hex)
+
+        result = {"step": identity, "attempt": attempts[identity], "probe": execute_step("probe")}
+        self.integrity(manifest)
+        result["status"] = result["probe"]["status"]
+        if result["probe"]["status"] != "OK" and "setup" in pending and self.remaining():
+            result["setup"] = execute_step("setup")
+            self.integrity(manifest)
+            result["status"] = result["setup"]["status"]
+            if result["setup"]["status"] == "OK":
+                result["initial_probe"] = result["probe"]
+                result["probe"] = execute_step("probe")
+                self.integrity(manifest)
+                result["status"] = result["probe"]["status"]
+        write(self.folder / "activities" / f"{uuid.uuid4().hex}.json",
+              {**result, "run_id": self.state["run"]["id"], "phase": "environment"})
+        progress["steps"][identity] = result
+        if self.remaining():
+            self.state["blocked_on"] = None if result["status"] == "OK" else f"Readiness check failed for {identity}"
+            if result["status"] != "OK" and attempts[identity] >= limit:
+                self.state.update(status="blocked", blocked_on=f"Environment attempt limit for {identity}")
+        self.save()
+        return result
+
+    def calibrate(self):
+        manifest = self.preparation_manifest()
+        progress = self.state["preparation"]
+        if any(progress["steps"].get(step["id"], {}).get("status") != "OK"
+               for step in manifest["environment"]):
+            raise ValueError("All environment readiness probes must succeed before calibration")
+        before = self.sealed(manifest)
+        try:
+            self.run_calibration(manifest, before, self.remaining)
+        except ValueError as error:
+            if self.remaining():
+                self.state.update(status="blocked", phase="calibration", blocked_on=str(error))
+                self.save()
+            raise
+        if not self.remaining():
+            raise ValueError("Run deadline reached")
+        progress["calibrated"] = True
+        self.state.update(status="ready", phase="calibration", blocked_on=None)
+        self.save()
+
+    def run_calibration(self, manifest, before, remaining):
         initial_sources = self.sources(manifest)
         results = []
-        # Calibration has its own bounded preparation budget before an implementation run.
-        deadline = time.time() + self.control()["timeout_minutes"] * 60
         for check in manifest["checks"]:
             for example in check["self_tests"]:
                 result = self.execute(example["command"], check.get("cwd", "."),
                                       min(check.get("timeout_seconds", 300), self.control()["check_timeout_seconds"],
-                                          max(0, deadline - time.time())), check["min_tests"], uuid.uuid4().hex)
+                                          remaining()), check["min_tests"], uuid.uuid4().hex)
                 results.append({"check": check["id"], "expected": example["expected"], **result})
                 if result["status"] != example["expected"]:
                     write(self.folder / "CALIBRATION.json", results)
@@ -355,23 +469,30 @@ class Harness:
         if before != self.sealed(manifest) or initial_sources != self.sources(manifest):
             raise ValueError("Checker, specification or sources changed during calibration")
         write(self.folder / "CALIBRATION.json", results)
-        write(self.folder / "BASELINE.json", {"approved_at": time.time(), "files": before})
-        self.state.update(status="ready", blocked_on=None, results={}, run=None)
-        self.save()
+
+    def new_run(self):
+        return {"id": uuid.uuid4().hex, "started_at": time.time(), "history": [],
+                "no_progress": 0, "high_streak": 0, "replanned": False,
+                "environment_attempts": {}, "best_passed": [], "best_metrics": {}}
 
     def start(self):
         if self.state.get("status") == "awaiting_approval":
             raise ValueError("Successful calibration and approval are required before starting")
         manifest = self.manifest()
         self.integrity(manifest)
+        preparation = self.state.get("preparation") or {}
+        if "environment" in manifest and not preparation.get("calibrated"):
+            raise ValueError("Environment preparation and calibration are required before implementation")
         if self.state.get("recovery_required"):
             raise ValueError("Legacy interrupted state requires recover first")
         if self.state.get("status") == "running":
             raise ValueError("A run is active; start cannot reset its deadline")
-        self.state.update(status="running", blocked_on=None)
-        self.state["run"] = {"id": uuid.uuid4().hex, "started_at": time.time(), "history": [],
-                             "no_progress": 0, "high_streak": 0, "replanned": False,
-                             "environment_attempts": {}, "best_passed": [], "best_metrics": {}}
+        if self.state["status"] == "ready" and self.state.get("phase") == "calibration":
+            if not self.remaining():
+                raise ValueError("Run deadline reached")
+        else:
+            self.state["run"] = self.new_run()
+        self.state.update(status="running", phase="implement", blocked_on=None)
         if self.state.get("active_loop") is not None:
             self.state["active_started_at"] = time.time()
         self.remaining()
@@ -389,6 +510,8 @@ class Harness:
         self.ensure_running()
         manifest = self.manifest()
         self.integrity(manifest)
+        if phase == "environment" and "environment" in manifest:
+            raise ValueError("Use the separate preparation stage for environment setup")
         if self.state.get("active_loop") is not None:
             raise ValueError("Continue the active loop; do not allocate another number")
         known = {task["id"]: task for task in manifest["tasks"]}
@@ -546,6 +669,8 @@ class Harness:
             raise ValueError("No active loop to record")
         manifest = self.manifest()
         self.integrity(manifest)
+        if "environment" in manifest and not (self.state.get("preparation") or {}).get("calibrated"):
+            raise ValueError("Calibrate before recording implementation work")
         control = self.control()
         run = self.state["run"]
         source_hashes = self.sources(manifest)
@@ -637,10 +762,15 @@ class Harness:
         run = self.state.get("run") or {}
         summary["run"] = {key: run.get(key) for key in ("id", "deadline", "no_progress", "high_streak")}
         summary["checks"] = {key: value["status"] for key, value in self.state.get("results", {}).items()}
+        if preparation := self.state.get("preparation"):
+            summary["preparation"] = {"calibrated": preparation["calibrated"],
+                                      "attempts": preparation["attempts"],
+                                      "steps": {key: value["status"] for key, value in preparation["steps"].items()}}
         return summary
 
     def refresh_status(self):
-        if self.state.get("run") and self.state["status"] == "running":
+        if self.state.get("run") and (self.state["status"] in ("running", "preparing")
+                                        or (self.state["status"] == "ready" and self.state["phase"] == "calibration")):
             self.remaining()
             self.save()
         elif self.state["status"] == "complete":
@@ -663,8 +793,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", type=Path, default=Path(__file__).resolve().parent)
     commands = parser.add_subparsers(dest="action", required=True)
-    for name in ("approve", "start", "status", "recover", "migrate"):
+    for name in ("approve", "calibrate", "start", "status", "recover", "migrate"):
         commands.add_parser(name)
+    prepare = commands.add_parser("prepare")
+    prepare.add_argument("step")
     begin = commands.add_parser("begin")
     begin.add_argument("--tasks", nargs="+", required=True)
     begin.add_argument("--phase", choices=["environment", "implement"], default="implement")
@@ -689,8 +821,10 @@ def main():
         with lock(args.harness.resolve()):
             harness = Harness(args.harness)
             output = None
-            if args.action in ("approve", "start", "recover", "migrate"):
+            if args.action in ("approve", "calibrate", "start", "recover", "migrate"):
                 getattr(harness, args.action)()
+            elif args.action == "prepare":
+                output = harness.prepare(args.step)
             elif args.action == "begin":
                 harness.begin(args.tasks, args.phase)
             elif args.action == "check":
@@ -725,7 +859,7 @@ def main():
             print(json.dumps(output if output is not None else harness.summary(), ensure_ascii=True))
             if output and output.get("final") and output["status"] != "PASS":
                 return 1
-            if args.action == "exec" and output["status"] != "OK":
+            if args.action in ("exec", "prepare") and output["status"] != "OK":
                 return 1
             return 0
     except (OSError, ValueError, KeyError, TypeError) as error:

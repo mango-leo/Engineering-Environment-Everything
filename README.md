@@ -1,6 +1,6 @@
 # Engineering Environment Everything
 
-An agent skill for turning an engineering request into a researched plan, a project-specific environment, and executable acceptance checks. After one plan review, the agent implements and verifies changes within a configurable time budget.
+An agent skill for turning an engineering request into a researched plan, a project-specific environment, and executable acceptance checks. The planning model defines the checks before approval. The implementation model starts after environment preparation and checker calibration.
 
 Maintained by [mango-leo on GitHub](https://github.com/mango-leo?tab=repositories).
 
@@ -30,8 +30,10 @@ AI 에이전트에게 개발을 맡길 때 흔한 문제는 다음과 같습니�
 | 요청 조사 | 사용자 요청과 기존 파일·도구를 먼저 파악하고, 필요한 분야의 공식 문서를 검색해 `RESEARCH.md`에 출처와 함께 기록 |
 | 11축 프로파일 | 작업의 성격, 산출물, 실행 환경, 완료 증거, 금칙, 관례, 도구, 대안, 첫 루프 목표, 인접 분야, 확신도를 정리 |
 | 실행 가능한 검증 | 요구사항마다 검증 어댑터와 정상(good)·실패(bad) 예제를 만들고, 상수 PASS를 내는 가짜 검증기를 차단 |
-| 1회 승인 | 계획·제약·완료 기준을 사용자가 한 번 확인하면 `approve`로 기준과 검증 코드의 해시를 고정 |
-| 자동 실행 루프 | 환경 준비 → 작은 구현 → 검증 → 보강을 사용자 응답 없이 반복 |
+| 계획과 구현 모델 배정 | 높은 추론 수준의 모델이 계획과 판정 코드를 작성하고 낮은 추론 수준의 모델이 구현 |
+| 1회 승인 | 사용자가 계획을 확인하면 `approve`로 준비 명령과 판정 기준을 고정 |
+| 별도 환경 준비 | 실제 준비 검사와 필요한 설치를 끝내고 검증기를 교정한 뒤 구현 시작 |
+| 자동 실행 루프 | 작은 구현 → 검증 → 보강을 사용자 응답 없이 반복 |
 | 시간·진전 감시 | 기본 60분 제한, 3회 연속 무진전 시 재계획, 이후 2회 더 무진전이면 중단 |
 | 인계 가능한 상태 | 상태·회차 기록·실행 로그가 `harness/`에 남아 크래시 후 `recover`, 에이전트 교체 후 이어하기 가능 |
 | 완료/중단 보고 | 완료 시 전체 검증 증거를, 중단 시 완료한 것·남은 검증·재개 지점을 보고 |
@@ -47,15 +49,16 @@ AI 에이전트에게 개발을 맡길 때 흔한 문제는 다음과 같습니�
 1. 조사        파일·도구 확인, 분야 문서 검색, 질문은 최대 3개
    │
    ▼
-2. 환경 구성   PROFILE · SPEC · CONSTRAINTS · PLAN · CHECKS.json
+2. 계획 모델   환경 준비 명령 · 제약 · PASS/FAIL 코드와 정상/실패 예제
    ▼
    [ 사용자 확인 1회 ]   계획 · 가정 · 금칙 · 완료 기준 · 예상 시간
    │
    ▼
-3. 자동 실행   approve로 정상·실패 예제 확인 → begin → 구현 → check → record  (반복)
-   │            무진전 · 시간 초과 · 차단 감시
+3. 환경 준비   approve → prepare → calibrate
    ▼
-4. 보고        check --final 의 PASS 증거 또는 중단 사유와 재개 지점
+4. 구현 모델   start → begin → 구현 → check → record  (반복)
+   ▼
+5. 보고        check --final의 PASS 증거 또는 중단 사유와 재개 지점
 ```
 
 ## 요구 사항
@@ -103,7 +106,7 @@ Codex만 쓴다면 `.agents/skills/engineering-environment-everything/`만 복�
 
 1. 에이전트가 요청과 프로젝트를 조사하고, 결과를 바꿀 질문만 최대 3개 묻습니다.
 2. 계획·가정·금칙·완료 기준·예상 시간을 보여 줍니다. **여기서 한 번 확인해 주세요.**
-3. 승인하면 자동으로 구현과 검증을 반복합니다.
+3. 승인하면 환경 준비와 검증기 교정을 먼저 진행합니다. 교정을 통과하면 구현 모델이 구현과 검증을 반복합니다.
 4. 완료(전체 검증 PASS) 또는 중단 시 증거와 함께 보고합니다.
 5. 시간 제한은 언제든 "30분으로 줄여 줘"처럼 요청해 바꿀 수 있습니다. 중단 후 재개는 사용자 승인이 있을 때만 새 예산으로 시작합니다.
 
@@ -134,10 +137,12 @@ Codex만 쓴다면 `.agents/skills/engineering-environment-everything/`만 복�
 
 | 명령 | 용도 |
 |---|---|
-| `approve` | 정상·실패 예제로 검증기를 확인하고 기준을 고정 (사용자 승인 후에만) |
-| `start` | 기본 60분 실행 예산 시작 |
+| `approve` | 사용자 확인 후 준비 명령과 판정 코드를 고정하고 기본 60분 예산 시작 |
+| `prepare E01` | 승인된 준비 검사 실행, 필요하면 설치·설정 후 재검사 |
+| `calibrate` | 계획에서 만든 정상·실패 예제로 검증기 확인 |
+| `start` | 교정 성공 후 구현 시작. 첫 실행의 마감은 준비 단계에서 이어받음 |
 | `status` | 현재 상태, 회차, 남은 시간 확인 |
-| `begin --tasks T01 --phase environment` | 작업 회차 예약 |
+| `begin --tasks T01` | 구현 회차 예약 |
 | `exec --timeout-seconds 300 -- <명령>` | 시간 제한과 로그가 있는 명령 실행 |
 | `check --ids V01` / `check --final` | 개별 검증 / 전체 최종 검증 |
 | `record` | 회차 완료 기록 |
@@ -166,7 +171,7 @@ Codex만 쓴다면 `.agents/skills/engineering-environment-everything/`만 복�
 ## 알려진 한계
 
 - 외부 증거를 만든 주체를 암호학적으로 인증하지는 않습니다. 신뢰할 실행 경로에서 수집했는지와 제공자를 `RESEARCH.md`에 기록하는 방식입니다.
-- 경량 감시 모델 분리 호출은 호스트가 지원할 때만 사용하며, 지원하지 않으면 로그·시간·무진전 판정으로 대체합니다.
+- 계획·구현·감시 모델의 분리 호출은 호스트의 모델 선택과 위임 기능에 따릅니다. 선택 기능이 없으면 역할과 편집 범위를 구분해 진행하고 실제 배정을 보고합니다.
 - 실장비, GUI, 라이선스가 필요한 환경은 에이전트가 직접 접근할 수 없을 수 있습니다. 이 경우 사용자 환경에서 수집한 로그를 받아 검증하고, 미검증 범위는 보고서에 남깁니다.
 
 ## 개발과 테스트

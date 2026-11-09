@@ -10,15 +10,24 @@ PROFILE, RESEARCH, PLAN, SPEC, CONSTRAINTS, VERIFICATION, CHECKS, CONTROL, STATE
 
 BASELINE.json은 사용자와 확인한 기준 및 검증 코드의 해시다. 사용자 승인 전에 approve를 실행하지 않는다. 이후 명세·검증 기준·검사 코드 수정이 필요하면 영향과 이유를 설명하고 변경된 기준을 확인받는다. 에이전트가 baseline을 다시 생성해서 실패를 우회하지 않는다.
 
+## 모델 배정과 인계
+
+- **계획 모델**은 호스트에서 선택 가능한 높은 추론 수준의 모델을 사용한다. Astra나 Fable은 배정 예시다. 조사 근거로 환경 준비, 제약, 구현 순서, 요구사항별 PASS/FAIL 어댑터와 정상·실패 예제를 승인 전에 작성한다. 각 목표와 제약이 어디서 검증되는지 대조한다. 접근을 재계획할 때도 이 역할을 사용한다.
+- **구현 모델**은 낮은 추론 수준의 모델을 사용한다. 예를 들어 Sonnet 또는 Luna를 사용할 수 있다. 준비와 교정이 끝난 뒤 현재 작업 ID, 승인된 계획·명세·제약, 관련 검사 명령, 최근 실패 로그를 전달한다. 구현 모델은 허용된 작업 파일만 수정하고 결과와 로그를 반환한다. 계획·판정 코드·fixture·BASELINE과 실행기 상태는 직접 수정하지 않는다. 진척과 최종 결과는 실행기 명령으로 기록한다.
+- 오케스트레이터가 호스트의 모델 선택과 작업 위임 기능으로 두 역할을 호출한다. 호스트가 역할별 선택을 지원하지 않으면 확인 가능한 모델로 단계와 편집 권한을 분리해 진행하고 같은 모델을 썼는지 또는 모델 ID를 확인할 수 없었는지 보고한다. PLAN에는 예정 배정을, 보고에는 실제 호출 모델과 확인 가능한 추론 설정을 남긴다. 역할 이름만으로 실제 분리 호출이 이루어졌다고 보고하지 않는다.
+
 ## 승인과 자동 실행
 
-1. 계획을 한 번 확인받으면 `python harness/runtime.py approve`로 정상·실패 예제를 검증하고 기준을 고정한다. 실패하면 검증기의 오류를 고치고 같은 승인 범위 안에서 다시 확인한다.
-2. `start`로 60분 기본 실행 예산을 시작한다. 기존 실행이 running이면 start를 다시 실행하지 않고 마감 시각을 유지한다.
-3. `status`를 확인한 뒤 의존성이 끝난 작업 1~2개를 선택한다. 처음에는 최소 실행 경로 T01을 다룬다. `begin --tasks T01 --phase environment` 또는 `begin --tasks T02 --phase implement`로 진행 회차를 예약한다. 환경 준비 후 실제 최소 실행을 확인한다.
-4. 선택 범위의 작업을 수행하고 변경 파일을 기록한다. 준비·빌드 등 오래 걸리는 명령은 `exec --timeout-seconds 300 -- <명령> <인자...>`로 실행한다. 남은 예산과 개별 제한 중 짧은 값을 적용하고 activities/에 실행 기록을 남긴다. 명령 성공 OK는 검증 PASS와 구분한다.
-5. `check --ids V01`처럼 관련 검증과 영향받는 회귀 검증을 실행한다. 현재 작업의 선행 검증도 자동 재실행한다. 실패한 검증의 원인을 분석하고 다음 회차에서 보강한다. 최종 완료 직전에는 `check --final`로 모든 검증을 실행한다.
-6. `record`로 회차를 완료한다. 호스트의 실측 토큰을 받은 경우에만 `record --usage usage.json`을 사용한다. usage 파일은 source, input_tokens, output_tokens를 가진다. 실행기의 상태와 검증 결과로 BACKLOG와 SPEC의 완료 표시를 맞춘다. 검증된 항목만 완료한다.
-7. REPORT_FORMAT.md에 따라 보고한다. 상태가 running이면 다음 회차를 자동 수행한다. 외부 장비·권한·라이선스 등이 필요하면 `block --reason ...`으로 조치를 기록한다.
+1. 계획을 한 번 확인받으면 `python harness/runtime.py approve`로 준비 명령과 판정 코드를 고정하고 기본 60분 예산을 시작한다.
+2. 승인 순서대로 `prepare <환경 ID>`를 실행한다. 준비 검사가 실패하면 등록된 설치·설정 명령을 실행하고 다시 확인한다. 이 단계에서는 제품을 구현하지 않는다. 설치 명령 성공과 환경 준비 완료를 구분한다. 실장비·라이선스·권한이 필요한 경우 사람이 준비할 조건을 기록하고 실제 확인 명령으로 검증한다.
+3. 모든 준비 검사가 성공하면 `calibrate`로 계획 모델이 작성한 정상·실패 예제를 실행한다. 준비할 항목이 없는 환경은 바로 교정한다. 교정이 실패하면 구현을 시작하지 않는다. 계획 모델이 원인을 분석하고 판정 코드를 바꿔야 하면 변경된 기준을 검토받는다.
+4. `start`로 구현 모델에 넘긴다. 첫 실행은 준비 단계에서 시작한 마감 시각을 유지한다. `status`를 확인하고 의존성이 끝난 작업 1~2개를 선택한다. 첫 작업은 최소 실행 경로이며 `begin --tasks T01`로 예약한다.
+5. 선택 범위의 작업을 수행하고 변경 파일을 기록한다. 빌드 등 오래 걸리는 명령은 `exec --timeout-seconds 300 -- <명령> <인자...>`로 실행한다. 남은 예산과 개별 제한 중 짧은 값을 적용하고 activities/에 실행 기록을 남긴다.
+6. `check --ids V01`처럼 관련 검증과 영향받는 회귀 검증을 실행한다. 현재 작업의 선행 검증도 자동 재실행한다. 실패한 검증의 원인을 분석하고 다음 회차에서 보강한다. 최종 완료 직전에는 `check --final`로 모든 검증을 실행한다.
+7. `record`로 회차를 완료한다. 호스트의 실측 토큰을 받은 경우에만 `record --usage usage.json`을 사용한다. usage 파일은 source, input_tokens, output_tokens를 가진다. 실행기의 상태와 검증 결과로 BACKLOG와 SPEC의 완료 표시를 맞춘다. 검증된 항목만 완료한다.
+8. REPORT_FORMAT.md에 따라 보고한다. 상태가 running이면 다음 회차를 자동 수행한다. 외부 장비·권한·라이선스 등이 필요하면 `block --reason ...`으로 조치를 기록한다.
+
+CHECKS.json에 environment 필드가 없는 이전 환경은 기존 `approve`(교정 포함) → `start` 흐름을 유지한다. 준비 단계를 도입하려면 멈춘 상태에서 계획과 검증 기준을 검토하고 environment를 추가해 승인한다.
 
 모든 하위 명령은 `python harness/runtime.py` 뒤에 붙인다. 개별 PASS는 전체 완료가 아니다. check --final이 status PASS를 내고 상태가 complete일 때만 전체 완료라고 보고한다.
 
@@ -36,11 +45,11 @@ MONITOR_REQUEST.json이 생기면 호스트가 모델을 지정할 수 있을 �
 
 시간 초과는 timed_out이다. 명령을 제한 시간으로 종료하고 현재 작업과 증거를 저장한다. 에이전트 자체의 취소는 호스트 기능을 사용한다. 호스트가 중간 취소를 지원하지 않으면 제어가 돌아온 첫 시점에 status를 확인하고 멈추며 실제 초과 시간도 보고한다.
 
-완료한 것, 진행 중이던 것, 남은 검증, 재개 작업을 알려 주고 계속할지 묻는다. 사용자 재개 승인 후 start로 새 예산을 시작한다. 임의로 제한을 늘리거나 재개하지 않는다.
+완료한 것, 진행 중이던 것, 남은 검증, 재개 작업을 알려 주고 계속할지 묻는다. 재개가 승인되면 교정 전에는 approve로 준비 검사를 다시 확인하며, 교정 후에는 start로 구현을 재개한다. 다른 호스트로 옮겼다면 준비 검사와 교정을 그 환경에서 다시 실행한다. 임의로 제한을 늘리거나 재개하지 않는다.
 
 ## 상태와 복구
 
-last_completed_loop는 완료 회차, active_loop는 진행 회차다. status는 awaiting_approval, ready, running, replan_required, paused, blocked, timed_out, complete 중 하나다. phase는 review, environment, implement, verify, report를 사용한다.
+last_completed_loop는 완료 회차, active_loop는 진행 회차다. status는 awaiting_approval, preparing, ready, running, replan_required, paused, blocked, timed_out, complete 중 하나다. phase는 review, environment, calibration, implement, verify, report를 사용한다.
 
 진행 중 회차가 있으면 같은 회차를 이어간다. 명령 재실행 전에 실제 상태와 증거를 확인한다. loops/NN.json은 해당 회차 완료 기록이다. 회차 기록 후 STATE 저장 전에 중단됐다면 recover가 같은 run_id의 완료 기록으로 상태를 복원한다. 부분 검증 중 중단되면 같은 회차에서 필요한 검증을 다시 수행한다.
 

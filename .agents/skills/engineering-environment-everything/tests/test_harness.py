@@ -353,6 +353,79 @@ class RuntimeTests(Fixture):
         self.assertEqual(runtime.load(self.folder / "STATE.v1.json")["loop"], 4)
 
 
+class PreparationTests(Fixture):
+    def generate(self, steps):
+        self.intake["environment"] = steps
+        self.files = init_harness.render_harness(init_harness.parse_profile(self.profile.read_text()), self.intake, {})
+        return self.build(approve=False)
+
+    def cli(self, *arguments, code=0):
+        result = subprocess.run([sys.executable, "-B", "harness/runtime.py", *arguments],
+                                capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(result.returncode, code, result.stderr or result.stdout)
+        return json.loads(result.stdout if code != 2 else result.stderr)
+
+    def test_missing_checker_dependency_is_installed_before_calibration(self):
+        setup = ["{python}", "-c", "import shutil; shutil.copyfile('harness/checks/tool.py', 'tool.py')"]
+        probe = ["{python}", "-c", "from tool import is_good; assert is_good('good')"]
+        self.generate([{"id": "E01", "setup": setup, "probe": probe, "files": ["harness/checks/tool.py"]},
+                       {"id": "E02", "probe": probe}])
+        (self.folder / "checks/tool.py").write_text("def is_good(value):\n    return value == 'good'\n")
+        adapter = ADAPTER.replace('passed = value == "good"',
+                                  'from runpy import run_path\npassed = run_path("tool.py")["is_good"](value)')
+        (self.folder / "checks/check.py").write_text(adapter)
+        self.assertFalse((self.root / "tool.py").exists())
+        approved = self.cli("approve")
+        self.assertEqual(approved["status"], "preparing")
+        self.assertFalse((self.folder / "CALIBRATION.json").exists())
+        self.cli("calibrate", code=2)
+        self.cli("start", code=2)
+        self.cli("prepare", "E02", code=2)
+        prepared = self.cli("prepare", "E01")
+        self.assertEqual(prepared["initial_probe"]["status"], "ERROR")
+        self.assertEqual(prepared["probe"]["status"], "OK")
+        self.assertNotIn("setup", self.cli("prepare", "E02"))
+        self.assertEqual(self.cli("calibrate")["status"], "ready")
+        started = self.cli("start")
+        self.assertEqual(started["run"], approved["run"])
+        self.cli("begin", "--tasks", "T01", "--phase", "environment", code=2)
+        self.cli("begin", "--tasks", "T01")
+        self.source.write_text("bad")
+        self.assertEqual(self.cli("check", "--final", code=1)["results"]["V02"]["status"], "FAIL")
+        self.source.write_text("good")
+        self.assertEqual(self.cli("check", "--final")["status"], "PASS")
+
+    def test_setup_success_without_ready_probe_blocks_at_attempt_limit(self):
+        self.generate([{"id": "E01", "setup": ["{python}", "-c", "pass"],
+                        "probe": ["{python}", "-c", "raise SystemExit(1)"]}])
+        self.cli("approve")
+        for attempt in range(1, 4):
+            result = self.cli("prepare", "E01", code=1)
+            self.assertEqual(result["attempt"], attempt)
+            self.assertEqual(result["setup"]["status"], "OK")
+            self.assertEqual(result["probe"]["status"], "ERROR")
+        self.assertEqual(self.cli("status")["status"], "blocked")
+        self.cli("prepare", "E01", code=2)
+        self.cli("start", code=2)
+
+    def test_checker_change_during_preparation_invalidates_approval(self):
+        harness = self.generate([])
+        harness.approve()
+        (self.folder / "checks/check.py").write_text(ADAPTER + "\n# changed after approval\n")
+        with self.assertRaisesRegex(ValueError, "checker changed"):
+            harness.calibrate()
+        self.assertEqual(harness.state["status"], "blocked")
+
+    def test_calibrated_run_cannot_start_after_preparation_deadline(self):
+        harness = self.generate([])
+        harness.approve()
+        harness.calibrate()
+        harness.state["run"]["started_at"] -= 3601
+        with self.assertRaisesRegex(ValueError, "deadline"):
+            harness.start()
+        self.assertEqual(harness.state["status"], "timed_out")
+
+
 class InitializationTests(Fixture):
     def test_interrupted_publication_resumes_without_overwriting(self):
         rename = Path.rename

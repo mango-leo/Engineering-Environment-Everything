@@ -1,6 +1,6 @@
 ---
 name: engineering-environment-everything
-description: 엔지니어링 요청을 분야별로 조사하고 계획·제약·실행 가능한 검증 환경을 구성한다. 사용자가 계획을 한 번 확인하면 구현과 코드 검증을 자동 반복하며 완료·무진전·시간 초과를 증거와 함께 보고한다. 프로젝트 착수, 환경 구성, spec 기반 개발과 기존 harness 인계에 사용한다.
+description: 엔지니어링 요청을 조사해 환경 준비 계획, 구현 제약, 실행 가능한 판정 코드를 만든다. 계획 확인 후 환경 준비와 검증기 교정을 마치고 구현과 검증을 반복한다. 프로젝트 착수, 환경 구성, spec 기반 개발과 기존 harness 인계에 사용한다.
 ---
 
 # Engineering Environment Everything

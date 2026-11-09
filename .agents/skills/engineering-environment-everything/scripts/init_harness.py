@@ -184,9 +184,11 @@ def render_harness(profile, intake, tools):
     state["tools"] = tools
     files["STATE.json"] = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
     files["CONTROL.json"] = json.dumps(CONTROL, indent=2) + "\n"
-    files["CHECKS.json"] = json.dumps({"schema_version": 2, "sources": string_list(intake, "sources"),
-                                     "requirements": requirements, "tasks": manifest_tasks,
-                                     "checks": manifest_checks}, ensure_ascii=False, indent=2) + "\n"
+    manifest = {"schema_version": 2, "sources": string_list(intake, "sources"),
+                "requirements": requirements, "tasks": manifest_tasks, "checks": manifest_checks}
+    if "environment" in intake:
+        manifest["environment"] = intake["environment"]
+    files["CHECKS.json"] = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     files["runtime.py"] = (Path(__file__).parent / "runtime.py").read_text(encoding="utf-8")
     return files
 
