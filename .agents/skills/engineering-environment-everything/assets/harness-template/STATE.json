@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "last_completed_loop": 0,
+  "active_loop": null,
+  "status": "awaiting_approval",
+  "phase": "review",
+  "current_task": [],
+  "blocked_on": null,
+  "profile": "PROFILE.md",
+  "tools": {},
+  "run": null,
+  "results": {},
+  "recovery_required": false
+}
