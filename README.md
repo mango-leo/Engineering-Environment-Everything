@@ -1,5 +1,7 @@
 # Engineering Environment Everything
 
+**한국어** · [English](README.en.md)
+
 An agent skill for turning an engineering request into a researched plan, a project-specific environment, and executable acceptance checks. The planning model defines the checks before approval. The implementation model starts after environment preparation and checker calibration.
 
 Maintained by [mango-leo on GitHub](https://github.com/mango-leo?tab=repositories).
