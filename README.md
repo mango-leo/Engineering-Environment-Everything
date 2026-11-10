@@ -6,6 +6,12 @@ An agent skill that turns an engineering request into a researched plan, a worki
 
 Maintained by [mango-leo on GitHub](https://github.com/mango-leo?tab=repositories).
 
+## 9.6-second demo
+
+![Sensor CSV demo. The runner prepares a Python environment, catches an incorrect mean of 63.0, and passes the same checks after the mean is corrected to 21.0.](docs/media/eee-demo.gif)
+
+[Open the MP4](docs/media/eee-demo.mp4)
+
 ## How it works
 
 1. **Research and plan.** The planning model inspects the project and available tools, researches unfamiliar requirements, and writes the setup commands, constraints, and acceptance checks. Each check includes examples that should pass and fail.
